@@ -1,0 +1,18 @@
+{
+  "pattern": "TODO",
+  "roots": [
+    "examples"
+  ],
+  "regex": false,
+  "include": [
+    "*.py",
+    "*.md"
+  ],
+  "ignore_case": null,
+  "hidden": null,
+  "backend": "auto",
+  "fallback": null,
+  "encoding": null,
+  "max_results": 20,
+  "max_line_chars": 300
+}

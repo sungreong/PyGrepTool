@@ -1,0 +1,57 @@
+# Byte-compiled files and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging output
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE and editor state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local agent and workspace configuration
+.agents/
+.mps/
+.skillbridge/
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Test and benchmark artifacts
+.tox/
+.nox/
+coverage.xml
+junit.xml
+benchmark-results/
+
+# Local build verification
+dist_check_tmp/

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pygreptool"
+version = "0.2.0"
+description = "A small Python grep/ripgrep adapter with pure Python fallback and LLM tool schema."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "pygreptool contributors" }
+]
+license = "MIT"
+keywords = ["grep", "ripgrep", "search", "regex", "cli"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.optional-dependencies]
+agent = [
+  "langchain>=1.0,<2.0",
+  "langchain-core>=1.0,<2.0",
+  "langchain-openai>=1.0,<2.0",
+  "langgraph>=1.0,<2.0",
+  "python-dotenv>=1.0,<2.0",
+]
+ignore = ["pathspec>=0.12,<1.1"]
+
+[project.scripts]
+pygreptool = "pygreptool.cli:main"
+pygrep-tool = "pygreptool.tool_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+markers = [
+  "live_agent: tests that call a live LLM provider and are skipped unless RUN_LIVE_AGENT_TESTS=1",
+]
