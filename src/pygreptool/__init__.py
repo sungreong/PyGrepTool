@@ -1,6 +1,15 @@
 """pygreptool public API."""
 
 from .core import BackendName, ContextBlock, ContextLine, SearchBackendError, SearchResult, read_context, search
+from .file_discovery import FileMatch, find_files, normalize_extensions
+from .file_tool import (
+    TOOL_NAME_FIND_FILES,
+    create_find_files_tool_runner,
+    get_openai_chat_find_files_tool_schema,
+    get_openai_responses_find_files_tool_schema,
+    run_find_files_tool,
+)
+from .security_policy import AuditEvent, CodeAccessPolicy, PolicyDeniedError
 from .tool import (
     OPENAI_CHAT_COMPLETIONS_TOOL,
     OPENAI_CHAT_READ_CONTEXT_TOOL_SCHEMA,
@@ -28,8 +37,11 @@ from .tool import (
 
 __all__ = [
     "BackendName",
+    "AuditEvent",
+    "CodeAccessPolicy",
     "ContextBlock",
     "ContextLine",
+    "FileMatch",
     "OPENAI_CHAT_COMPLETIONS_TOOL",
     "OPENAI_CHAT_READ_CONTEXT_TOOL_SCHEMA",
     "OPENAI_CHAT_TOOL_SCHEMA",
@@ -38,19 +50,27 @@ __all__ = [
     "OPENAI_RESPONSES_TOOL_SCHEMA",
     "SearchBackendError",
     "SearchResult",
+    "PolicyDeniedError",
     "TOOL_FUNCTIONS",
     "TOOL_NAME",
+    "TOOL_NAME_FIND_FILES",
     "TOOL_NAME_READ_CONTEXT",
     "ToolInputError",
+    "create_find_files_tool_runner",
     "create_read_context_tool_runner",
     "create_search_tool_runner",
+    "find_files",
+    "get_openai_chat_find_files_tool_schema",
     "get_openai_chat_read_context_tool_schema",
     "get_openai_chat_tool_schema",
+    "get_openai_responses_find_files_tool_schema",
     "get_openai_responses_read_context_tool_schema",
     "get_openai_responses_tool_schema",
     "get_tool_spec",
+    "normalize_extensions",
     "read_context",
     "read_context_tool",
+    "run_find_files_tool",
     "run_read_context_tool",
     "run_search_tool",
     "search",

@@ -7,29 +7,33 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from pygreptool.core import (
+from .core import (
     DEFAULT_IGNORE_FILES,
     BackendName,
     PathInput,
     SearchResult,
     read_context,
     resolve_search_roots,
-    resolve_workspace_root,
     search,
 )
+from .path_policy import AgentPathMapper
+from .runtime_scope import (
+    ToolInputError,
+    resolve_effective_allowed_roots,
+    resolve_path_for_tool_workspace,
+    resolve_tool_workspace_root,
+    validate_tool_allowed_roots,
+)
+from .security_policy import CodeAccessPolicy
 
 TOOL_NAME = "search_code"
 TOOL_NAME_READ_CONTEXT = "read_context"
 TOOL_DESCRIPTION = (
-    "Search local code/files for a text or regex pattern and return normalized matches "
-    "with path, line number, column, matched text, line text, and backend. "
-    "Use this when you need to inspect where code, TODOs, imports, symbols, "
-    "configuration keys, or arbitrary text appear inside a project. "
-    "Each result includes read_context_args for reading a wider file slice with read_context."
+    "Search text inside policy-allowed project files. Use for code, symbols, TODOs, imports, and configuration keys. "
+    "Do not use for filename discovery; use find_files. Returns exact path, line, column, and read_context_args."
 )
 TOOL_DESCRIPTION_READ_CONTEXT = (
-    "Read surrounding lines or a bounded full-file slice from one local file. "
-    "Use this after search_code when you need more context around a selected match."
+    "Read a bounded line range from one policy-allowed file. Use after search_code to verify a selected match."
 )
 
 _BACKEND_VALUES = ["auto", "smart", "rg", "grep", "python"]
@@ -115,6 +119,13 @@ _STRICT_PARAMETERS: dict[str, Any] = {
             "maximum": 20,
             "description": "Number of lines to include after each match. Null uses the tool default.",
         },
+        "include_context": {
+            "type": ["boolean", "null"],
+            "description": (
+                "Whether results should include nearby lines. Use false for compact discovery and read_context "
+                "for selected matches."
+            ),
+        },
     },
     # Strict function schemas require every property to be listed as required.
     # Optional fields are represented by allowing null and applying defaults in the handler.
@@ -132,6 +143,7 @@ _STRICT_PARAMETERS: dict[str, Any] = {
         "max_line_chars",
         "context_before",
         "context_after",
+        "include_context",
     ],
     "additionalProperties": False,
 }
@@ -253,10 +265,6 @@ OPENAI_RESPONSES_TOOL_SCHEMA = get_openai_responses_tool_schema()
 OPENAI_CHAT_TOOL_SCHEMA = get_openai_chat_tool_schema()
 OPENAI_RESPONSES_READ_CONTEXT_TOOL_SCHEMA = get_openai_responses_read_context_tool_schema()
 OPENAI_CHAT_READ_CONTEXT_TOOL_SCHEMA = get_openai_chat_read_context_tool_schema()
-
-
-class ToolInputError(ValueError):
-    """Raised when function-call arguments do not match the expected tool input."""
 
 
 def _as_mapping(arguments: Mapping[str, Any] | str) -> Mapping[str, Any]:
@@ -412,6 +420,7 @@ def normalize_tool_arguments(arguments: Mapping[str, Any] | str) -> dict[str, An
         "max_line_chars": max_line_chars,
         "context_before": context_before,
         "context_after": context_after,
+        "include_context": _optional_bool(raw.get("include_context"), "include_context", True),
     }
 
 
@@ -457,82 +466,6 @@ def normalize_read_context_arguments(arguments: Mapping[str, Any] | str) -> dict
     }
 
 
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
-
-
-def _resolve_path_for_workspace(path: PathInput, workspace_root: Path | None) -> Path:
-    candidate = Path(path).expanduser()
-    if workspace_root is not None and not candidate.is_absolute():
-        candidate = workspace_root / candidate
-    return candidate.resolve(strict=False)
-
-
-def _resolve_allowed_roots(
-    allowed_roots: Sequence[PathInput] | None,
-    *,
-    workspace_root: Path | None,
-) -> list[Path] | None:
-    if allowed_roots is None:
-        return None
-    return [_resolve_path_for_workspace(item, workspace_root) for item in allowed_roots]
-
-
-def _workspace_root_from_env(env_var: str = "PYGREPKIT_WORKSPACE_ROOT") -> Path | None:
-    raw = os.environ.get(env_var)
-    if not raw:
-        return None
-    return resolve_workspace_root(raw)
-
-
-def _tool_workspace_root(
-    workspace_root: PathInput | None,
-    allowed_roots: Sequence[PathInput] | None,
-) -> tuple[Path, bool]:
-    explicit_workspace = resolve_workspace_root(workspace_root)
-    if explicit_workspace is not None:
-        return explicit_workspace, True
-
-    env_workspace = _workspace_root_from_env()
-    if env_workspace is not None:
-        return env_workspace, True
-
-    if allowed_roots is not None and len(allowed_roots) == 1:
-        return _resolve_path_for_workspace(allowed_roots[0], None), False
-
-    return Path.cwd().resolve(strict=False), False
-
-
-def _effective_allowed_roots(
-    allowed_roots: Sequence[PathInput] | None,
-    *,
-    workspace_root: Path,
-    default_to_workspace: bool,
-) -> list[Path] | None:
-    resolved_allowed = _resolve_allowed_roots(allowed_roots, workspace_root=workspace_root)
-    if resolved_allowed is not None:
-        return resolved_allowed
-    if default_to_workspace:
-        return [workspace_root]
-    return None
-
-
-def _validate_allowed_roots(roots: Sequence[PathInput], allowed_roots: Sequence[PathInput] | None) -> None:
-    if not allowed_roots:
-        return
-
-    normalized_allowed = [Path(item).expanduser().resolve(strict=False) for item in allowed_roots]
-    for root in roots:
-        resolved_root = Path(root).expanduser().resolve(strict=False)
-        if not any(resolved_root == allowed or _is_relative_to(resolved_root, allowed) for allowed in normalized_allowed):
-            allowed_text = ", ".join(str(item) for item in normalized_allowed)
-            raise ToolInputError(f"root is outside allowed_roots: {resolved_root}. allowed_roots={allowed_text}")
-
-
 def _truncate_text(text: str, max_chars: int | None) -> tuple[str, bool]:
     if max_chars is None or len(text) <= max_chars:
         return text, False
@@ -545,9 +478,9 @@ def _context_to_tool_dict(context: Any) -> dict[str, Any]:
     return asdict(context)
 
 
-def _read_context_args_for_result(result: SearchResult) -> dict[str, Any]:
+def _read_context_args_for_result(result: SearchResult, *, path_formatter: Callable[[Path], str] = str) -> dict[str, Any]:
     return {
-        "path": str(result.path),
+        "path": path_formatter(result.path),
         "line_number": result.line_number,
         "before": _DEFAULT_READ_BEFORE,
         "after": _DEFAULT_READ_AFTER,
@@ -555,11 +488,16 @@ def _read_context_args_for_result(result: SearchResult) -> dict[str, Any]:
     }
 
 
-def search_result_to_tool_dict(result: SearchResult, *, max_line_chars: int | None) -> dict[str, Any]:
+def search_result_to_tool_dict(
+    result: SearchResult,
+    *,
+    max_line_chars: int | None,
+    path_formatter: Callable[[Path], str] = str,
+) -> dict[str, Any]:
     """Convert a SearchResult into a JSON-serializable tool result item."""
 
     data = asdict(result)
-    data["path"] = str(result.path)
+    data["path"] = path_formatter(result.path)
     line, truncated = _truncate_text(result.line, max_line_chars)
     data["line"] = line
     data["line_truncated"] = truncated
@@ -567,8 +505,35 @@ def search_result_to_tool_dict(result: SearchResult, *, max_line_chars: int | No
         data["context"] = _context_to_tool_dict(result.context)
     else:
         data.pop("context", None)
-    data["read_context_args"] = _read_context_args_for_result(result)
+    data["read_context_args"] = _read_context_args_for_result(result, path_formatter=path_formatter)
     return data
+
+
+def _redact_serialized_value(value: Any, policy: CodeAccessPolicy | None) -> tuple[Any, bool]:
+    if policy is None:
+        return value, False
+    if isinstance(value, str):
+        return policy.redact(value)
+    if isinstance(value, list):
+        changed = False
+        items = []
+        for item in value:
+            redacted, item_changed = _redact_serialized_value(item, policy)
+            items.append(redacted)
+            changed = changed or item_changed
+        return items, changed
+    if isinstance(value, dict):
+        changed = False
+        items: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "path":
+                items[key] = item
+                continue
+            redacted, item_changed = _redact_serialized_value(item, policy)
+            items[key] = redacted
+            changed = changed or item_changed
+        return items, changed
+    return value, False
 
 
 def run_search_tool(
@@ -576,6 +541,8 @@ def run_search_tool(
     *,
     allowed_roots: Sequence[PathInput] | None = None,
     workspace_root: PathInput | None = None,
+    virtual_mode: bool = False,
+    policy: CodeAccessPolicy | None = None,
     respect_ignore: bool = True,
     ignore_files: Sequence[PathInput] = DEFAULT_IGNORE_FILES,
 ) -> dict[str, Any]:
@@ -589,17 +556,33 @@ def run_search_tool(
 
     try:
         normalized = normalize_tool_arguments(arguments)
-        runtime_workspace_root, default_to_workspace = _tool_workspace_root(workspace_root, allowed_roots)
+        runtime_workspace_root, default_to_workspace = resolve_tool_workspace_root(workspace_root, allowed_roots)
+        if virtual_mode and not default_to_workspace:
+            raise ToolInputError("virtual_mode requires an explicit workspace_root or PYGREPKIT_WORKSPACE_ROOT")
+        mapper = AgentPathMapper(runtime_workspace_root, virtual_mode=virtual_mode)
         resolved_roots = resolve_search_roots(normalized["roots"], runtime_workspace_root)
-        effective_allowed_roots = _effective_allowed_roots(
+        if virtual_mode:
+            resolved_roots = [mapper.to_physical(root) for root in normalized["roots"]]
+        effective_allowed_roots = resolve_effective_allowed_roots(
             allowed_roots,
             workspace_root=runtime_workspace_root,
             default_to_workspace=default_to_workspace,
         )
-        _validate_allowed_roots(resolved_roots, effective_allowed_roots)
+        validate_tool_allowed_roots(resolved_roots, effective_allowed_roots)
+        if policy is not None:
+            for root in resolved_roots:
+                policy.enforce_path(
+                    root,
+                    workspace_root=runtime_workspace_root,
+                    agent_path=mapper.to_agent_path(root),
+                    tool=TOOL_NAME,
+                    operation="search",
+                )
         result_limit = normalized["max_results"]
         probe_limit = result_limit + 1 if result_limit is not None else None
 
+        context_before = normalized["context_before"] if normalized["include_context"] else 0
+        context_after = normalized["context_after"] if normalized["include_context"] else 0
         results = search(
             normalized["pattern"],
             resolved_roots,
@@ -614,22 +597,32 @@ def run_search_tool(
             workspace_root=runtime_workspace_root,
             respect_ignore=respect_ignore,
             ignore_files=ignore_files,
-            context_before=normalized["context_before"],
-            context_after=normalized["context_after"],
+            context_before=context_before,
+            context_after=context_after,
         )
+        if policy is not None:
+            results = [
+                result for result in results if policy.allow_result_path(result.path, workspace_root=runtime_workspace_root)
+            ]
 
         max_line_chars = normalized["max_line_chars"]
         truncated = result_limit is not None and len(results) > result_limit
         visible_results = results[:result_limit] if result_limit is not None else results
-        items = [search_result_to_tool_dict(item, max_line_chars=max_line_chars) for item in visible_results]
+        items = [
+            search_result_to_tool_dict(item, max_line_chars=max_line_chars, path_formatter=mapper.to_agent_path)
+            for item in visible_results
+        ]
+        items, redacted = _redact_serialized_value(items, policy)
 
         return {
             "ok": True,
             "tool": TOOL_NAME,
             "query": normalized,
+            "summary": f"Found {len(items)} match(es).",
             "count": len(items),
             "truncated": truncated,
             "results": items,
+            "redacted": redacted,
             "related_tools": [
                 {
                     "tool": TOOL_NAME_READ_CONTEXT,
@@ -637,6 +630,11 @@ def run_search_tool(
                     "reason": "Use this to inspect more surrounding lines or a larger file slice for selected matches.",
                 }
             ],
+            "next_step": (
+                "Call read_context with a result's read_context_args when more surrounding lines are needed."
+                if items
+                else "Retry with a shorter pattern, regex, or a different allowed root."
+            ),
             "error": None,
         }
     except Exception as exc:  # noqa: BLE001 - tool handlers should serialize failures.
@@ -644,6 +642,7 @@ def run_search_tool(
             "ok": False,
             "tool": TOOL_NAME,
             "query": None,
+            "summary": "Code search could not run inside the configured project boundary.",
             "count": 0,
             "truncated": False,
             "results": [],
@@ -654,6 +653,7 @@ def run_search_tool(
                     "reason": "Use this to inspect more surrounding lines or a larger file slice for selected matches.",
                 }
             ],
+            "next_step": "Check the pattern, roots, and allowed_roots, then retry.",
             "error": {
                 "type": exc.__class__.__name__,
                 "message": str(exc),
@@ -666,19 +666,33 @@ def run_read_context_tool(
     *,
     allowed_roots: Sequence[PathInput] | None = None,
     workspace_root: PathInput | None = None,
+    virtual_mode: bool = False,
+    policy: CodeAccessPolicy | None = None,
 ) -> dict[str, Any]:
     """Execute the read_context tool and return a JSON-serializable payload."""
 
     try:
         normalized = normalize_read_context_arguments(arguments)
-        runtime_workspace_root, default_to_workspace = _tool_workspace_root(workspace_root, allowed_roots)
-        effective_allowed_roots = _effective_allowed_roots(
+        runtime_workspace_root, default_to_workspace = resolve_tool_workspace_root(workspace_root, allowed_roots)
+        if virtual_mode and not default_to_workspace:
+            raise ToolInputError("virtual_mode requires an explicit workspace_root or PYGREPKIT_WORKSPACE_ROOT")
+        mapper = AgentPathMapper(runtime_workspace_root, virtual_mode=virtual_mode)
+        effective_allowed_roots = resolve_effective_allowed_roots(
             allowed_roots,
             workspace_root=runtime_workspace_root,
             default_to_workspace=default_to_workspace,
         )
+        resolved_input_path = mapper.to_physical(normalized["path"])
+        if policy is not None:
+            policy.enforce_path(
+                resolved_input_path,
+                workspace_root=runtime_workspace_root,
+                agent_path=mapper.to_agent_path(resolved_input_path),
+                tool=TOOL_NAME_READ_CONTEXT,
+                operation="read",
+            )
         context = read_context(
-            normalized["path"],
+            resolved_input_path,
             line_number=normalized["line_number"],
             before=normalized["before"],
             after=normalized["after"],
@@ -689,17 +703,32 @@ def run_read_context_tool(
             allowed_roots=effective_allowed_roots,
             encoding=normalized["encoding"],
         )
-        resolved_path = _resolve_path_for_workspace(normalized["path"], runtime_workspace_root)
+        resolved_path = resolve_path_for_tool_workspace(resolved_input_path, runtime_workspace_root)
 
+        content, content_redacted = _redact_serialized_value(context.content, policy)
+        lines, lines_redacted = _redact_serialized_value([asdict(line) for line in context.lines], policy)
+        agent_path = mapper.to_agent_path(resolved_path)
+        line_count = len(context.lines)
         return {
             "ok": True,
             "tool": TOOL_NAME_READ_CONTEXT,
-            "path": str(resolved_path),
+            "path": agent_path,
             "start_line": context.start_line,
             "end_line": context.end_line,
-            "content": context.content,
-            "lines": [asdict(line) for line in context.lines],
+            "summary": f"Read {line_count} line(s) from {agent_path} (lines {context.start_line}-{context.end_line}).",
+            "count": line_count,
+            "content": content,
+            "lines": lines,
+            "redacted": content_redacted or lines_redacted,
             "truncated": context.truncated,
+            "related_tools": [
+                {
+                    "tool": TOOL_NAME,
+                    "available": True,
+                    "reason": "Use search_code to find more evidence in the allowed workspace.",
+                }
+            ],
+            "next_step": "Use this bounded file evidence in the final answer or run another focused search.",
             "error": None,
         }
     except Exception as exc:  # noqa: BLE001 - tool handlers should serialize failures.
@@ -709,9 +738,13 @@ def run_read_context_tool(
             "path": None,
             "start_line": None,
             "end_line": None,
+            "summary": "File context could not be read inside the configured project boundary.",
+            "count": 0,
             "content": "",
             "lines": [],
             "truncated": False,
+            "related_tools": [],
+            "next_step": "Use a policy-allowed path returned by search_code and retry.",
             "error": {
                 "type": exc.__class__.__name__,
                 "message": str(exc),
@@ -731,6 +764,8 @@ def allowed_roots_from_env(env_var: str = "PYGREPKIT_ALLOWED_ROOTS") -> list[str
 def create_search_tool_runner(
     *,
     workspace_root: PathInput | None = None,
+    virtual_mode: bool = False,
+    policy: CodeAccessPolicy | None = None,
     allowed_roots: Sequence[PathInput] | None = None,
     respect_ignore: bool = True,
     ignore_files: Sequence[PathInput] = DEFAULT_IGNORE_FILES,
@@ -741,6 +776,8 @@ def create_search_tool_runner(
         return run_search_tool(
             arguments,
             workspace_root=workspace_root,
+            virtual_mode=virtual_mode,
+            policy=policy,
             allowed_roots=allowed_roots,
             respect_ignore=respect_ignore,
             ignore_files=ignore_files,
@@ -752,6 +789,8 @@ def create_search_tool_runner(
 def create_read_context_tool_runner(
     *,
     workspace_root: PathInput | None = None,
+    virtual_mode: bool = False,
+    policy: CodeAccessPolicy | None = None,
     allowed_roots: Sequence[PathInput] | None = None,
 ) -> Callable[[Mapping[str, Any] | str], dict[str, Any]]:
     """Create a configured ``read_context`` runner for model function-call arguments."""
@@ -760,20 +799,38 @@ def create_read_context_tool_runner(
         return run_read_context_tool(
             arguments,
             workspace_root=workspace_root,
+            virtual_mode=virtual_mode,
+            policy=policy,
             allowed_roots=allowed_roots,
         )
 
     return runner
 
 
-def get_tool_spec(format: str = "responses") -> dict[str, Any]:
+def get_tool_spec(format: str = "responses", tool_name: str = TOOL_NAME) -> dict[str, Any]:
     """Return an OpenAI-compatible function tool schema.
 
     ``responses`` returns the Responses API shape. ``chat_completions`` returns
-    the Chat Completions shape where function fields are nested under
-    ``function``.
+    the Chat Completions shape where function fields are nested under ``function``.
+    ``tool_name`` accepts ``find_files``, ``search_code``, or ``read_context``.
     """
 
+    if tool_name == "find_files":
+        from .file_tool import get_openai_chat_find_files_tool_schema, get_openai_responses_find_files_tool_schema
+
+        if format == "responses":
+            return get_openai_responses_find_files_tool_schema()
+        if format == "chat_completions":
+            return get_openai_chat_find_files_tool_schema()
+        raise ValueError("format must be one of: responses, chat_completions")
+    if tool_name == TOOL_NAME_READ_CONTEXT:
+        if format == "responses":
+            return get_openai_responses_read_context_tool_schema()
+        if format == "chat_completions":
+            return get_openai_chat_read_context_tool_schema()
+        raise ValueError("format must be one of: responses, chat_completions")
+    if tool_name != TOOL_NAME:
+        raise ValueError("tool_name must be one of: find_files, search_code, read_context")
     if format == "responses":
         return get_openai_responses_tool_schema()
     if format == "chat_completions":
@@ -787,8 +844,19 @@ search_files_tool = run_search_tool
 # Deprecated alias. Kept so older agent configs can still call the same handler.
 search_code_tool = run_search_tool
 read_context_tool = run_read_context_tool
+
+
+def _run_find_files_tool_proxy(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Load the optional file-discovery handler without creating an import cycle."""
+
+    from .file_tool import run_find_files_tool
+
+    return run_find_files_tool(*args, **kwargs)
+
+
 TOOL_FUNCTIONS = {
     TOOL_NAME: run_search_tool,
     "search_files": run_search_tool,
+    "find_files": _run_find_files_tool_proxy,
     TOOL_NAME_READ_CONTEXT: run_read_context_tool,
 }

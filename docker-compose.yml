@@ -2,8 +2,17 @@ services:
   app:
     build: .
     working_dir: /app
-    volumes:
-      - .:/app
+    network_mode: none
     environment:
-      PYTHONPATH: /app/src
-    command: pytest -q
+      PYTHONPATH: /app:/app/src
+    command: pytest
+  sandbox-demo:
+    build: .
+    working_dir: /app
+    network_mode: none
+    volumes:
+      # Mount only a deliberately safe fixture, never the host project or home directory.
+      - ./tests/fixtures/agent_sample_project:/workspace:ro
+    environment:
+      PYTHONPATH: /app:/app/src
+    command: python examples/sandboxed_navigation.py

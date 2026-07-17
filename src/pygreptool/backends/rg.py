@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
-from pygreptool.core import SearchBackendError, SearchResult
+from ..core import SearchBackendError, SearchResult
 
 
 def rg_available() -> bool:

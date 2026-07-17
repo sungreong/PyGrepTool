@@ -9,7 +9,40 @@ import pytest
 pytest.importorskip("langchain_core")
 pytest.importorskip("pydantic")
 
-from pygreptool.langchain_tool import create_langchain_read_context_tool, create_langchain_search_tool
+from pygreptool.langchain_tool import (
+    create_langchain_find_files_tool,
+    create_langchain_read_context_tool,
+    create_langchain_search_tool,
+)
+
+
+def test_langchain_find_files_tool_returns_safe_structured_candidates(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "alpha_service.py").write_text("alpha\n", encoding="utf-8")
+    (src / "worker.txt").write_text("worker\n", encoding="utf-8")
+    find_tool = create_langchain_find_files_tool(workspace_root=tmp_path, allowed_roots=["src"])
+
+    raw = find_tool.invoke({"folder": "src", "name_query": "service", "extensions": ["py"]})
+    result = json.loads(raw)
+
+    assert find_tool.name == "find_files"
+    assert "Do not use for text inside a file" in find_tool.description
+    assert result["ok"] is True
+    assert result["results"] == [
+        {"path": str(src / "alpha_service.py"), "name": "alpha_service.py", "extension": "py"}
+    ]
+
+
+def test_langchain_find_files_tool_rejects_escape_from_allowed_roots(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    find_tool = create_langchain_find_files_tool(workspace_root=tmp_path, allowed_roots=["src"])
+
+    result = json.loads(find_tool.invoke({"folder": ".."}))
+
+    assert result["ok"] is False
+    assert "outside allowed_roots" in result["error"]["message"]
 
 
 def test_langchain_search_tool_invokes_pygreptool(tmp_path: Path) -> None:
@@ -31,6 +64,31 @@ def test_langchain_search_tool_invokes_pygreptool(tmp_path: Path) -> None:
     assert result["count"] == 1
     assert result["results"][0]["path"].endswith("app.py")
     assert result["results"][0]["backend"] == "python"
+
+
+def test_langchain_search_tool_only_includes_context_when_requested(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("before\nTODO target\nafter\n", encoding="utf-8")
+    search_tool = create_langchain_search_tool(allowed_roots=[tmp_path])
+
+    compact = json.loads(
+        search_tool.invoke({"pattern": "TODO", "roots": [str(tmp_path)], "backend": "python"})
+    )
+    expanded = json.loads(
+        search_tool.invoke(
+            {
+                "pattern": "TODO",
+                "roots": [str(tmp_path)],
+                "backend": "python",
+                "include_context": True,
+                "context_before": 1,
+                "context_after": 1,
+            }
+        )
+    )
+
+    assert "context" not in compact["results"][0]
+    assert expanded["results"][0]["context"]["content"] == "before\nTODO target\nafter"
 
 
 def test_langchain_search_tool_rejects_roots_outside_allowed_roots(tmp_path: Path) -> None:
@@ -60,13 +118,14 @@ def test_langchain_search_tool_schema_guides_focused_search(tmp_path: Path) -> N
     search_tool = create_langchain_search_tool(allowed_roots=[tmp_path])
 
     assert search_tool.name == "search_code"
-    assert "focused roots" in search_tool.description
+    assert "Do not use for filenames" in search_tool.description
     schema = search_tool.args_schema.model_json_schema()
     assert schema["properties"]["backend"]["default"] == "smart"
     assert "project-relative paths" in schema["properties"]["roots"]["description"]
     assert "[:=]" in schema["properties"]["pattern"]["description"]
     assert "context_before" in schema["properties"]
     assert "context_after" in schema["properties"]
+    assert schema["properties"]["include_context"]["default"] is False
     assert "workspace_root" not in schema["properties"]
     assert "ignore_files" not in schema["properties"]
     assert "read_context_args" in search_tool.description
@@ -143,6 +202,9 @@ def test_langchain_read_context_tool_respects_workspace_and_allowed_roots(tmp_pa
     assert result["ok"] is True
     assert result["path"] == str(target)
     assert result["content"] == "one\nTODO from read tool\nthree"
+    assert result["count"] == 3
+    assert result["summary"] == f"Read 3 line(s) from {target} (lines 1-3)."
+    assert result["next_step"]
 
 
 def test_langchain_read_context_tool_rejects_outside_allowed_roots(tmp_path: Path) -> None:

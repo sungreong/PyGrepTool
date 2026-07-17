@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Sequence
 
-from pygreptool.core import BackendName, SearchBackendError, SearchResult, search
+from .core import BackendName, SearchBackendError, SearchResult, search
 
 
 def _result_to_dict(result: SearchResult) -> dict[str, object]:

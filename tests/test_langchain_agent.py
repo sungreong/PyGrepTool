@@ -1,23 +1,19 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 
-os.environ.setdefault("USE_TORCH", "0")
-os.environ.setdefault("TRANSFORMERS_NO_TORCH", "1")
-os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
-
 pytest.importorskip("langchain")
 pytest.importorskip("langchain_core")
 
+from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 
-from pygreptool.langchain_agent import create_search_agent
+from pygreptool.langchain_toolkit import create_pygrep_tools
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "agent_sample_project"
@@ -30,7 +26,7 @@ class ToolCallingFakeModel(FakeMessagesListChatModel):
         return self
 
 
-def test_agent_uses_search_code_then_read_context() -> None:
+def test_application_owned_agent_uses_search_then_read_context() -> None:
     target = FIXTURE_ROOT / "src" / "beta_service.py"
     model = ToolCallingFakeModel(
         responses=[
@@ -45,8 +41,7 @@ def test_agent_uses_search_code_then_read_context() -> None:
                             "regex": False,
                             "backend": "smart",
                             "max_results": 5,
-                            "context_before": 1,
-                            "context_after": 1,
+                            "include_context": False,
                         },
                         "id": "call_search",
                     }
@@ -71,18 +66,13 @@ def test_agent_uses_search_code_then_read_context() -> None:
                     }
                 ],
             ),
-            AIMessage(
-                content=(
-                    "src/beta_service.py:6 contains BETA_EXACT_NEEDLE, and the wider "
-                    "context shows configure_beta uses backend smart."
-                )
-            ),
+            AIMessage(content="src/beta_service.py:6 contains BETA_EXACT_NEEDLE."),
         ]
     )
-    agent = create_search_agent(
+    agent = create_agent(
         model=model,
-        workspace_root=FIXTURE_ROOT,
-        allowed_roots=["src"],
+        tools=create_pygrep_tools(workspace_root=FIXTURE_ROOT, allowed_roots=["src"]),
+        system_prompt="Use the supplied read-only tools to inspect code.",
     )
 
     result = agent.invoke(
@@ -94,5 +84,37 @@ def test_agent_uses_search_code_then_read_context() -> None:
     assert [message.name for message in tool_messages] == ["search_code", "read_context"]
     assert "read_context_args" in tool_messages[0].content
     assert "configure_beta" in tool_messages[1].content
-    assert "content" in tool_messages[1].content
     assert result["messages"][-1].content.startswith("src/beta_service.py:6")
+
+
+def test_application_owned_agent_can_use_file_discovery() -> None:
+    model = ToolCallingFakeModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "find_files",
+                        "args": {"folder": "src", "name_query": "service", "extensions": ["py"]},
+                        "id": "call_find",
+                    }
+                ],
+            ),
+            AIMessage(content="The matching Python files are alpha_service.py and beta_service.py."),
+        ]
+    )
+    agent = create_agent(
+        model=model,
+        tools=create_pygrep_tools(workspace_root=FIXTURE_ROOT, allowed_roots=["src"]),
+        system_prompt="Use the supplied read-only tools to inspect code.",
+    )
+
+    result = agent.invoke(
+        {"messages": [{"role": "user", "content": "Find Python service files in src."}]},
+        config={"recursion_limit": 6},
+    )
+
+    tool_messages = [message for message in result["messages"] if message.__class__.__name__ == "ToolMessage"]
+    assert [message.name for message in tool_messages] == ["find_files"]
+    assert "alpha_service.py" in tool_messages[0].content
+    assert "beta_service.py" in tool_messages[0].content

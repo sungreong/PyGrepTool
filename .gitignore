@@ -40,6 +40,15 @@ pip-wheel-metadata/
 .agents/
 .mps/
 .skillbridge/
+.codex/
+.claude/
+.cursor/
+.gemini/
+.copilot/
+AGENTS.md
+CLAUDE.md
+CODEX.md
+GEMINI.md
 
 # Operating-system files
 .DS_Store

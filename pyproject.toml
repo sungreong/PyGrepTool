@@ -21,14 +21,19 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+langchain = [
+  "langchain>=1.0,<2.0",
+  "langchain-core>=1.0,<2.0",
+]
 agent = [
   "langchain>=1.0,<2.0",
   "langchain-core>=1.0,<2.0",
   "langchain-openai>=1.0,<2.0",
-  "langgraph>=1.0,<2.0",
   "python-dotenv>=1.0,<2.0",
 ]
+community = ["langchain-community>=0.4,<0.5"]
 ignore = ["pathspec>=0.12,<1.1"]
+dev = ["pytest>=8.2,<9"]
 
 [project.scripts]
 pygreptool = "pygreptool.cli:main"
@@ -40,7 +45,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-q"
+addopts = "-q -m 'not live_agent'"
 markers = [
-  "live_agent: tests that call a live LLM provider and are skipped unless RUN_LIVE_AGENT_TESTS=1",
+  "live_agent: tests that call a live LLM provider; excluded from the default test suite",
 ]

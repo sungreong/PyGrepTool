@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from pygreptool.tool import (
+from .tool import (
     allowed_roots_from_env,
     get_openai_chat_tool_schema,
     get_openai_responses_tool_schema,

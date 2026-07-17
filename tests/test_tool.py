@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 from pygreptool import (
+    TOOL_FUNCTIONS,
     TOOL_NAME,
     create_search_tool_runner,
+    get_tool_spec,
     run_read_context_tool,
     get_openai_chat_tool_schema,
     get_openai_responses_tool_schema,
@@ -34,6 +36,24 @@ def test_chat_tool_schema_is_nested_function_schema() -> None:
     assert schema["function"]["name"] == TOOL_NAME
     assert schema["function"]["strict"] is True
     assert schema["function"]["parameters"]["additionalProperties"] is False
+
+
+def test_find_files_is_available_from_the_existing_tool_registry() -> None:
+    schema = get_tool_spec("responses", "find_files")
+
+    assert schema["name"] == "find_files"
+    assert "extensions" in schema["parameters"]["properties"]
+    assert TOOL_FUNCTIONS["find_files"](
+        {"folder": ".", "name_query": None, "extensions": None, "max_results": 0, "hidden": False},
+        allowed_roots=["."],
+    )["tool"] == "find_files"
+
+
+def test_get_tool_spec_supports_read_context() -> None:
+    schema = get_tool_spec("responses", "read_context")
+
+    assert schema["name"] == "read_context"
+    assert "line_number" in schema["parameters"]["properties"]
 
 
 def test_run_search_tool_returns_json_serializable_results(tmp_path: Path) -> None:

@@ -12,14 +12,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md requirements.txt ./
+COPY pyproject.toml README.md ./
 COPY src ./src
+COPY standalone ./standalone
 COPY tests ./tests
 COPY examples ./examples
-COPY scripts ./scripts
-COPY tools ./tools
 
 RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+    && pip install ".[dev]"
 
 CMD ["pytest", "-q"]

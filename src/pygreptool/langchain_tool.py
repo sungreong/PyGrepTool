@@ -7,8 +7,10 @@ from typing import Sequence
 
 from pydantic import BaseModel, Field
 
-from pygreptool.core import DEFAULT_IGNORE_FILES, PathInput
-from pygreptool.tool import run_read_context_tool, run_search_tool
+from .core import DEFAULT_IGNORE_FILES, PathInput
+from .file_tool import TOOL_DESCRIPTION_FIND_FILES, run_find_files_tool
+from .security_policy import CodeAccessPolicy
+from .tool import run_read_context_tool, run_search_tool
 
 
 class SearchCodeInput(BaseModel):
@@ -16,15 +18,15 @@ class SearchCodeInput(BaseModel):
 
     pattern: str = Field(
         description=(
-            "Text or regular expression to search for. For code variants, prefer regex such as "
-            "[\"']?backend[\"']?\\s*[:=]\\s*[\"']smart[\"'] instead of one exact quote/spacing style."
+            "Text or regular expression to search for. For code variants, accept a closing key quote, for example "
+            "backend[\"']?\\s*[:=]\\s*[\"']smart[\"']; this matches quoted or unquoted keys without relying on one style."
         )
     )
     roots: list[str] = Field(
         default_factory=lambda: ["."],
         description=(
-            "Files or directories to search. Prefer project-relative paths like ['src', 'tests']. "
-            "When the tool has a configured workspace or allowed scope, relative roots are resolved inside it."
+            "Use project-relative paths to search. Use ['.'] for the configured workspace unless the user named a folder "
+            "or find_files returned one. Relative roots are resolved inside the configured workspace or allowed scope."
         ),
     )
     regex: bool = Field(default=False, description="Whether pattern is a regular expression.")
@@ -40,8 +42,28 @@ class SearchCodeInput(BaseModel):
     )
     max_results: int = Field(default=20, ge=0, le=1000, description="Maximum number of matches to return.")
     max_line_chars: int = Field(default=300, ge=1, le=20000, description="Maximum characters kept per line.")
-    context_before: int = Field(default=3, ge=0, le=20, description="Lines of context before each match.")
-    context_after: int = Field(default=3, ge=0, le=20, description="Lines of context after each match.")
+    include_context: bool = Field(
+        default=False,
+        description="Set true only when nearby lines are needed in every search result. Otherwise use read_context for selected matches.",
+    )
+    context_before: int = Field(default=3, ge=0, le=20, description="Lines before each match when include_context is true.")
+    context_after: int = Field(default=3, ge=0, le=20, description="Lines after each match when include_context is true.")
+
+
+class FindFilesInput(BaseModel):
+    """High-level schema for safe filename discovery."""
+
+    folder: str = Field(default=".", description="Project-relative folder to inspect, for example 'src' or 'docs'.")
+    name_query: str | None = Field(
+        default=None,
+        description="Optional case-insensitive filename text such as 'service'. Do not use this for file contents.",
+    )
+    extensions: list[str] | None = Field(
+        default=None,
+        description="Optional extensions such as ['py'] or ['.py', 'md']. Both forms are accepted.",
+    )
+    max_results: int = Field(default=20, ge=0, le=1000, description="Maximum candidate files to return.")
+    hidden: bool = Field(default=False, description="Whether to include hidden files and directories.")
 
 
 class ReadContextInput(BaseModel):
@@ -78,10 +100,13 @@ def _search_code_handler(
     backend: str = "smart",
     max_results: int = 20,
     max_line_chars: int = 300,
+    include_context: bool = False,
     context_before: int = 3,
     context_after: int = 3,
     *,
     workspace_root: PathInput | None = None,
+    virtual_mode: bool = False,
+    policy: CodeAccessPolicy | None = None,
     allowed_roots: Sequence[PathInput] | None = None,
     respect_ignore: bool = True,
     ignore_files: Sequence[PathInput] = DEFAULT_IGNORE_FILES,
@@ -96,6 +121,7 @@ def _search_code_handler(
         "backend": backend,
         "max_results": max_results,
         "max_line_chars": max_line_chars,
+        "include_context": include_context,
         "context_before": context_before,
         "context_after": context_after,
     }
@@ -105,6 +131,8 @@ def _search_code_handler(
     result = run_search_tool(
         payload,
         workspace_root=workspace_root,
+        virtual_mode=virtual_mode,
+        policy=policy,
         allowed_roots=default_allowed_roots,
         respect_ignore=respect_ignore,
         ignore_files=ignore_files,
@@ -112,15 +140,102 @@ def _search_code_handler(
     if result.get("ok") is True and result.get("count") == 0:
         result["hints"] = [
             "If the exact phrase failed, retry with a shorter stable token.",
-            "For code key/value variants, use regex with optional key quotes, whitespace, and ':' or '=' such as [\"']?key[\"']?\\s*[:=]\\s*[\"']value[\"'].",
+            "For code key/value variants, allow a closing key quote plus whitespace and ':' or '=', such as key[\"']?\\s*[:=]\\s*[\"']value[\"'].",
             "Try focused roots inside the allowed project root, for example ['src'], ['tests'], or ['docs'].",
         ]
     return json.dumps(result, ensure_ascii=False)
 
 
+def _find_files_handler(
+    folder: str = ".",
+    name_query: str | None = None,
+    extensions: list[str] | None = None,
+    max_results: int = 20,
+    hidden: bool = False,
+    *,
+    workspace_root: PathInput | None = None,
+    virtual_mode: bool = False,
+    policy: CodeAccessPolicy | None = None,
+    allowed_roots: Sequence[PathInput] | None = None,
+    respect_ignore: bool = True,
+    ignore_files: Sequence[PathInput] = DEFAULT_IGNORE_FILES,
+) -> str:
+    result = run_find_files_tool(
+        {
+            "folder": folder,
+            "name_query": name_query,
+            "extensions": extensions,
+            "max_results": max_results,
+            "hidden": hidden,
+        },
+        workspace_root=workspace_root,
+        virtual_mode=virtual_mode,
+        policy=policy,
+        allowed_roots=allowed_roots,
+        respect_ignore=respect_ignore,
+        ignore_files=ignore_files,
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+def create_langchain_find_files_tool(
+    *,
+    workspace_root: PathInput | None = None,
+    virtual_mode: bool = False,
+    policy: CodeAccessPolicy | None = None,
+    allowed_roots: Sequence[PathInput] | None = None,
+    respect_ignore: bool = True,
+    ignore_files: Sequence[PathInput] = DEFAULT_IGNORE_FILES,
+):
+    """Create a read-only LangChain tool for high-level project file discovery."""
+
+    try:
+        from langchain_core.tools import StructuredTool
+    except ImportError as exc:
+        raise ImportError(
+            "LangChain integration requires langchain-core. "
+            "Install the optional agent dependencies before using create_langchain_find_files_tool()."
+        ) from exc
+
+    roots_scope = list(allowed_roots) if allowed_roots is not None else None
+    ignore_file_scope = tuple(ignore_files)
+
+    def find_files(
+        folder: str = ".",
+        name_query: str | None = None,
+        extensions: list[str] | None = None,
+        max_results: int = 20,
+        hidden: bool = False,
+    ) -> str:
+        """Find candidate filenames in a scoped folder before searching file contents."""
+
+        return _find_files_handler(
+            folder,
+            name_query=name_query,
+            extensions=extensions,
+            max_results=max_results,
+            hidden=hidden,
+            workspace_root=workspace_root,
+            virtual_mode=virtual_mode,
+            policy=policy,
+            allowed_roots=roots_scope,
+            respect_ignore=respect_ignore,
+            ignore_files=ignore_file_scope,
+        )
+
+    return StructuredTool.from_function(
+        find_files,
+        name="find_files",
+        description=TOOL_DESCRIPTION_FIND_FILES,
+        args_schema=FindFilesInput,
+    )
+
+
 def create_langchain_search_tool(
     *,
     workspace_root: PathInput | None = None,
+    virtual_mode: bool = False,
+    policy: CodeAccessPolicy | None = None,
     allowed_roots: Sequence[PathInput] | None = None,
     respect_ignore: bool = True,
     ignore_files: Sequence[PathInput] = DEFAULT_IGNORE_FILES,
@@ -148,6 +263,7 @@ def create_langchain_search_tool(
         backend: str = "smart",
         max_results: int = 20,
         max_line_chars: int = 300,
+        include_context: bool = False,
         context_before: int = 3,
         context_after: int = 3,
     ) -> str:
@@ -163,9 +279,12 @@ def create_langchain_search_tool(
             backend=backend,
             max_results=max_results,
             max_line_chars=max_line_chars,
+            include_context=include_context,
             context_before=context_before,
             context_after=context_after,
             workspace_root=workspace_root,
+            virtual_mode=virtual_mode,
+            policy=policy,
             allowed_roots=roots_scope,
             respect_ignore=respect_ignore,
             ignore_files=ignore_file_scope,
@@ -175,14 +294,10 @@ def create_langchain_search_tool(
         search_code,
         name="search_code",
         description=(
-            "Search local project files for exact text or regex and return JSON matches. "
-            "Use this before answering questions about where code, tests, docs, TODOs, imports, "
-            "or symbols appear in the repository. Prefer backend='smart' and focused roots. "
-            "Relative roots like ['src'] are interpreted inside the configured workspace or allowed scope. "
-            "If you need more context for a result, call read_context with that result's read_context_args. "
-            "If an exact string search returns no results, retry with a shorter token or a regex "
-            "that handles quote/spacing/key-value variants, such as [\"']?key[\"']?\\s*[:=]\\s*[\"']value[\"'], "
-            "before concluding nothing exists."
+            "Search text inside allowed files. Use for symbols, TODOs, imports, tests, and config keys. "
+            "Do not use for filenames; use find_files. Use a focused root such as '/src'. "
+            "Returns compact exact locations by default; set include_context=true only when every match needs nearby lines. "
+            "Otherwise call read_context with read_context_args for selected matches."
         ),
         args_schema=SearchCodeInput,
     )
@@ -191,6 +306,8 @@ def create_langchain_search_tool(
 def create_langchain_read_context_tool(
     *,
     workspace_root: PathInput | None = None,
+    virtual_mode: bool = False,
+    policy: CodeAccessPolicy | None = None,
     allowed_roots: Sequence[PathInput] | None = None,
 ):
     """Create a LangChain StructuredTool wrapper around pygreptool's read_context handler."""
@@ -229,6 +346,8 @@ def create_langchain_read_context_tool(
                 "encoding": encoding,
             },
             workspace_root=workspace_root,
+            virtual_mode=virtual_mode,
+            policy=policy,
             allowed_roots=roots_scope,
         )
         return json.dumps(result, ensure_ascii=False)
@@ -237,8 +356,7 @@ def create_langchain_read_context_tool(
         read_context,
         name="read_context",
         description=(
-            "Read surrounding lines or a bounded full-file slice from one local project file. "
-            "Use this with search_code result read_context_args when a match needs more context."
+            "Read a bounded line range from one allowed file. Use only after search_code when a selected match needs context."
         ),
         args_schema=ReadContextInput,
     )

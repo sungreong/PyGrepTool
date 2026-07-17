@@ -7,8 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Sequence
 
-from pygreptool.core import SearchBackendError, SearchResult
-from pygreptool.backends.python import compile_pattern
+from ..core import SearchBackendError, SearchResult
+from .python import compile_pattern
 
 
 def grep_available() -> bool:

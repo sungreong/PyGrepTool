@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from pygreptool.core import DEFAULT_IGNORE_FILES, PathInput, SearchResult, resolve_workspace_root
+from ..core import DEFAULT_IGNORE_FILES, PathInput, SearchResult, resolve_workspace_root
 
 DEFAULT_SKIP_DIRS = {
     ".git",
