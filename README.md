@@ -2,6 +2,8 @@
 
 > Policy-bound, read-only code navigation tools for AI agents.
 
+![PyGrepTool workflow: find files, search code, and read context](assets/readme/pygreptool-banner-workflow-refined.png)
+
 [한국어](README.ko.md)
 
 PyGrepTool lets an agent find files, search exact text or regular expressions, and read only the lines needed to support an answer. It returns virtual paths, line evidence, bounded context, and explicit policy denials—without a vector database, index, or prebuilt agent.

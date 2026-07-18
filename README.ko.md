@@ -2,6 +2,8 @@
 
 > AI agent를 위한 policy-bound, read-only 코드 탐색 도구
 
+![PyGrepTool 워크플로: 파일 찾기, 코드 검색, 문맥 읽기](assets/readme/pygreptool-banner-workflow-refined.png)
+
 [English](README.md)
 
 PyGrepTool은 agent가 파일을 찾고, 정확한 문자열·정규식을 검색하고, 답변에 필요한 줄만 읽도록 돕습니다. vector DB나 사전 인덱스 없이 가상 경로, 줄 근거, 제한된 문맥, 명시적인 policy 차단 결과를 반환합니다.
