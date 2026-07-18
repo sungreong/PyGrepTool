@@ -20,14 +20,18 @@ DEFAULT_DENY_GLOBS: tuple[str, ...] = (
     "*.pem",
     "*.key",
     "id_rsa*",
+    "credentials.yml",
+    "credentials.yaml",
     "**/*.pem",
     "**/*.key",
     "**/id_rsa*",
+    "**/credentials.yml",
+    "**/credentials.yaml",
 )
 DEFAULT_REDACTION_PATTERNS: tuple[str, ...] = (
     r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{20,}\b",
     r"\bAKIA[0-9A-Z]{16}\b",
-    r"(?i)\b(?:api[_-]?key|secret|token|password)\s*[:=]\s*[^\s,;]+",
+    r"(?i)\b(?:api[_-]?(?:key|token)|secret|token|password)\s*[:=]\s*[^\s,;]+",
 )
 
 

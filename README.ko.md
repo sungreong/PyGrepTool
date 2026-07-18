@@ -95,7 +95,7 @@ agent path:  /src/main.py
 physical:    /workspace/project/src/main.py
 ```
 
-tool은 `..`, `~`, Windows drive/UNC 경로, `allowed_roots` 밖으로 resolve되는 경로를 거부합니다. allowlist 밖으로 나가는 symlink도 제외합니다. virtual mode의 오류 응답은 물리 workspace 경로를 숨깁니다. `CodeAccessPolicy`는 `.env`, `.git`, PEM/key 파일처럼 흔한 secret path를 차단하고, 반환 줄의 secret-like 값을 redaction합니다.
+tool은 `..`, `~`, Windows drive/UNC 경로, `allowed_roots` 밖으로 resolve되는 경로를 거부합니다. allowlist 밖으로 나가는 symlink도 제외합니다. virtual mode의 오류 응답은 물리 workspace 경로를 숨기고, 기존 allowed root를 쓰거나 host에 좁은 범위의 승인을 요청하도록 안내합니다. 경로 변형을 통한 재시도·우회는 안내하지 않습니다. `CodeAccessPolicy`는 `.env`, `.git`, `credentials.yml`, PEM/key 파일처럼 흔한 secret path를 차단하고, 반환 줄의 secret-like 값을 redaction합니다.
 
 이것은 defense-in-depth이지 sandbox가 아닙니다. agent에 shell 실행 권한이나 넓은 host volume mount가 있으면 file-tool policy를 우회할 수 있습니다. 민감한 환경에서는 read-only workspace mount, shell/network tool 미제공, 실제 process 격리를 함께 사용하세요.
 
@@ -108,6 +108,33 @@ docker compose run --rm sandbox-demo
 ```
 
 runtime image는 source checkout이 아니라 빌드된 wheel을 설치합니다. 두 Compose service는 runtime network 없이 실행되며, demo는 fixture workspace만 `/workspace:ro`에 mount합니다.
+
+API key 없이 agent access contract를 확인하려면 다음을 실행하세요.
+
+```powershell
+python examples\agent_access_contract_demo.py
+```
+
+이 예제는 허용된 `BACKEND_MODE` 검색, fixture marker를 노출하지 않는 private path 요청 거부, agent에게 반환하는 안전한 다음 행동을 한 번에 출력합니다.
+
+실제 LangChain agent가 같은 Tool을 고르는 과정을 보려면 opt-in live service를 실행하세요. Compose는 로컬 환경 또는 `.env`의 `OPENAI_API_KEY`를 값 출력 없이 전달합니다. 이 service만 model provider 호출을 위해 outbound network를 사용하며, 파일 접근은 read-only `/workspace` fixture mount로 계속 제한됩니다.
+
+```powershell
+docker compose --profile live-agent run --rm agent-live-demo
+```
+
+마지막 인자로 직접 질문을 넣을 수 있습니다. 질문은 agent에 전달되지만 mounted workspace에서는 `/src`, `/docs`만 계속 사용할 수 있습니다.
+
+```powershell
+docker compose --profile live-agent run --rm agent-live-demo "Find BACKEND_MODE under /src and cite the path and line."
+docker compose --profile live-agent run --rm agent-live-demo "Can you inspect /private?"
+```
+
+접근 주장까지 테스트하려면 기대 경로를 명시하세요. agent가 해당 경로를 실제 Tool로 호출하지 않으면 runner는 non-zero로 끝나고 최종 답변을 `unverified`로 표시합니다.
+
+```powershell
+docker compose --profile live-agent run --rm agent-live-demo --expect-allowed /src --expect-denied /private "src에서 BACKEND_MODE를 찾고 private도 검색 가능한지 확인해줘."
+```
 
 ## 범위, ignore 규칙, scan budget
 

@@ -17,7 +17,7 @@ from .core import (
     resolve_search_roots,
     search,
 )
-from .error_safety import safe_tool_error_message
+from .error_safety import safe_tool_error_message, safe_tool_error_next_step
 from .path_policy import AgentPathMapper
 from .runtime_scope import (
     ToolInputError,
@@ -751,7 +751,10 @@ def run_search_tool(
                     "reason": "Use this to inspect more surrounding lines or a larger file slice for selected matches.",
                 }
             ],
-            "next_step": "Check the pattern, roots, and allowed_roots, then retry.",
+            "next_step": safe_tool_error_next_step(
+                virtual_mode=virtual_mode,
+                default="Check the pattern, roots, and allowed_roots, then retry.",
+            ),
             "error": {
                 "type": exc.__class__.__name__,
                 "message": safe_tool_error_message(exc, virtual_mode=virtual_mode),
@@ -842,7 +845,10 @@ def run_read_context_tool(
             "lines": [],
             "truncated": False,
             "related_tools": [],
-            "next_step": "Use a policy-allowed path returned by search_code and retry.",
+            "next_step": safe_tool_error_next_step(
+                virtual_mode=virtual_mode,
+                default="Use a policy-allowed path returned by search_code and retry.",
+            ),
             "error": {
                 "type": exc.__class__.__name__,
                 "message": safe_tool_error_message(exc, virtual_mode=virtual_mode),

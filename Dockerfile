@@ -9,7 +9,7 @@ COPY src ./src
 RUN python -m pip wheel --no-deps --wheel-dir /wheel .
 
 
-FROM python:3.12-slim
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -39,3 +39,17 @@ RUN python -m pip install --upgrade pip \
     && rm -rf /wheel
 
 CMD ["pytest", "-q"]
+
+
+# Opt-in image for the live LangChain example. The default runtime image above
+# stays dependency-minimal and does not contain a model provider SDK.
+FROM runtime AS agent-demo
+
+RUN python -m pip install \
+    "langchain>=1.0,<2.0" \
+    "langchain-core>=1.0,<2.0" \
+    "langchain-openai>=1.0,<2.0"
+
+
+# Keep the default `docker build .` and ordinary Compose services minimal.
+FROM runtime AS final

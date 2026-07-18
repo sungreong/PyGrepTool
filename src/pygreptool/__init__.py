@@ -1,6 +1,7 @@
 """pygreptool public API."""
 
 from .core import BackendName, ContextBlock, ContextLine, SearchBackendError, SearchResult, read_context, search
+from .agent_contract import verify_agent_access_contract
 from .file_discovery import FileMatch, find_files, normalize_extensions
 from .file_tool import (
     TOOL_NAME_FIND_FILES,
@@ -56,6 +57,7 @@ __all__ = [
     "TOOL_NAME_FIND_FILES",
     "TOOL_NAME_READ_CONTEXT",
     "ToolInputError",
+    "verify_agent_access_contract",
     "create_find_files_tool_runner",
     "create_read_context_tool_runner",
     "create_search_tool_runner",

@@ -95,7 +95,7 @@ agent path:  /src/main.py
 physical:    /workspace/project/src/main.py
 ```
 
-The tools reject `..`, `~`, Windows drive/UNC paths, and paths resolving outside `allowed_roots`; symlinks escaping the allowlist are excluded. Virtual-mode error responses hide physical workspace paths. `CodeAccessPolicy` denies common secret paths such as `.env`, `.git`, and PEM/key files, and redacts secret-looking values in returned lines.
+The tools reject `..`, `~`, Windows drive/UNC paths, and paths resolving outside `allowed_roots`; symlinks escaping the allowlist are excluded. Virtual-mode error responses hide physical workspace paths and tell the agent to use an existing allowed root or request narrowly scoped host approval—not to retry through path transformations. `CodeAccessPolicy` denies common secret paths such as `.env`, `.git`, `credentials.yml`, and PEM/key files, and redacts secret-looking values in returned lines.
 
 This is defense in depth, not a sandbox. If an agent can execute a shell or receives a broad host-volume mount, it can bypass file-tool policy. Use a read-only workspace mount, no shell/network tool, and a real process boundary for security-sensitive deployments.
 
@@ -108,6 +108,33 @@ docker compose run --rm sandbox-demo
 ```
 
 The runtime image installs the built wheel rather than the source checkout. Both Compose services run without runtime network access; the demo mounts only the fixture workspace at `/workspace:ro`.
+
+For a key-free view of the agent access contract, run:
+
+```powershell
+python examples\agent_access_contract_demo.py
+```
+
+It prints an allowed `BACKEND_MODE` search, a denied private-path request with no leaked fixture marker, and the safe next action returned to the agent.
+
+To watch a real LangChain agent choose the same Tools, run the opt-in live service. Compose passes `OPENAI_API_KEY` from the local environment or `.env` without printing it. This service has outbound network access only because it calls the model provider; its file access remains a read-only `/workspace` fixture mount.
+
+```powershell
+docker compose --profile live-agent run --rm agent-live-demo
+```
+
+Pass your own question as the final argument. It is sent to the agent; only `/src` and `/docs` remain available through the mounted workspace.
+
+```powershell
+docker compose --profile live-agent run --rm agent-live-demo "Find BACKEND_MODE under /src and cite the path and line."
+docker compose --profile live-agent run --rm agent-live-demo "Can you inspect /private?"
+```
+
+For a testable access claim, add expected paths. The runner then exits non-zero and labels the final answer unverified when the agent did not actually call the required path.
+
+```powershell
+docker compose --profile live-agent run --rm agent-live-demo --expect-allowed /src --expect-denied /private "Find BACKEND_MODE under /src, then check whether /private can be searched."
+```
 
 ## Scope, ignore rules, and scan budgets
 
