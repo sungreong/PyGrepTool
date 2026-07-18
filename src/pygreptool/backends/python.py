@@ -3,6 +3,8 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -20,6 +22,39 @@ DEFAULT_SKIP_DIRS = {
     ".pytest_cache",
     ".ruff_cache",
 }
+
+
+@dataclass(frozen=True)
+class ScanBudget:
+    """Host-configured limits for a deterministic Python search scan."""
+
+    max_files_scanned: int | None = None
+    max_total_bytes_scanned: int | None = None
+    timeout_ms: int | None = None
+
+
+@dataclass
+class ScanStats:
+    """Safe accounting for one Python backend search."""
+
+    files_scanned: int = 0
+    total_bytes_scanned: int = 0
+    files_skipped_by_budget: int = 0
+    files_skipped_binary: int = 0
+    budget_exhausted: bool = False
+    timed_out: bool = False
+
+    def to_dict(self, *, duration_ms: float, enforced: bool) -> dict[str, int | float | bool]:
+        return {
+            "duration_ms": round(duration_ms, 2),
+            "budget_enforced": enforced,
+            "files_scanned": self.files_scanned,
+            "total_bytes_scanned": self.total_bytes_scanned,
+            "files_skipped_by_budget": self.files_skipped_by_budget,
+            "files_skipped_binary": self.files_skipped_binary,
+            "budget_exhausted": self.budget_exhausted,
+            "timed_out": self.timed_out,
+        }
 
 
 def _matches_include(path: Path, include: Sequence[str] | None) -> bool:
@@ -176,12 +211,16 @@ def search_with_python(
     workspace_root: PathInput | None = None,
     respect_ignore: bool = True,
     ignore_files: Sequence[PathInput] = DEFAULT_IGNORE_FILES,
+    scan_budget: ScanBudget | None = None,
+    scan_stats: ScanStats | None = None,
 ) -> list[SearchResult]:
     """Pure Python line-oriented search backend."""
 
     compiled = compile_pattern(pattern, regex=regex, ignore_case=ignore_case)
     results: list[SearchResult] = []
 
+    started = time.monotonic()
+    stats = scan_stats or ScanStats()
     for path in iter_candidate_files(
         roots,
         include=include,
@@ -190,10 +229,30 @@ def search_with_python(
         respect_ignore=respect_ignore,
         ignore_files=ignore_files,
     ):
+        if scan_budget is not None and scan_budget.timeout_ms is not None:
+            if (time.monotonic() - started) * 1000 >= scan_budget.timeout_ms:
+                stats.timed_out = True
+                break
+        if scan_budget is not None and scan_budget.max_files_scanned is not None:
+            if stats.files_scanned >= scan_budget.max_files_scanned:
+                stats.budget_exhausted = True
+                break
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if scan_budget is not None and scan_budget.max_total_bytes_scanned is not None:
+            if stats.total_bytes_scanned + size > scan_budget.max_total_bytes_scanned:
+                stats.files_skipped_by_budget += 1
+                stats.budget_exhausted = True
+                continue
         if is_probably_binary(path):
+            stats.files_skipped_binary += 1
             continue
 
         try:
+            stats.files_scanned += 1
+            stats.total_bytes_scanned += size
             with path.open("r", encoding=encoding, errors="replace") as file:
                 for line_number, raw_line in enumerate(file, start=1):
                     line = raw_line.rstrip("\r\n")

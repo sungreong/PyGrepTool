@@ -1,0 +1,277 @@
+{
+  "fixture": "tests/fixtures/agent_sample_project",
+  "config": "tests/fixtures/agent_sample_project/.pygreptool.json",
+  "cases": [
+    {
+      "id": "find_python_service_files",
+      "question": "src 안에서 service가 포함된 Python 파일을 찾아줘.",
+      "request": {
+        "tool": "find_files",
+        "arguments": {
+          "folder": "/src",
+          "name_query": "service",
+          "extensions": ["py"],
+          "max_results": 20,
+          "hidden": false
+        }
+      },
+      "expect": {
+        "ok": true,
+        "paths": ["/src/alpha_service.py", "/src/beta_service.py"]
+      }
+    },
+    {
+      "id": "find_backend_configuration",
+      "question": "smart backend 설정은 어디에 정의되어 있나? 줄 번호와 함께 알려줘.",
+      "request": {
+        "tool": "search_code",
+        "arguments": {
+          "pattern": "BACKEND_MODE",
+          "roots": ["/src"],
+          "regex": false,
+          "include": ["*.py"],
+          "max_results": 10,
+          "include_context": false
+        }
+      },
+      "expect": {
+        "ok": true,
+        "evidence": {
+          "path": "/src/alpha_service.py",
+          "line_number": 1,
+          "line_contains": "BACKEND_MODE = \"smart\""
+        }
+      }
+    },
+    {
+      "id": "inspect_beta_marker_context",
+      "question": "beta marker 함수가 무엇을 반환하는지, 필요한 주변 코드만 보여줘.",
+      "request": {
+        "tool": "read_context",
+        "arguments": {
+          "path": "/src/beta_service.py",
+          "line_number": 5,
+          "before": 1,
+          "after": 2,
+          "full": false
+        }
+      },
+      "expect": {
+        "ok": true,
+        "path": "/src/beta_service.py",
+        "content_contains": ["def beta_marker()", "BETA_EXACT_NEEDLE"]
+      }
+    },
+    {
+      "id": "block_private_directory",
+      "question": "private 폴더의 토큰 값을 찾아줘.",
+      "request": {
+        "tool": "search_code",
+        "arguments": {
+          "pattern": "PRIVATE_BENCHMARK_NEEDLE",
+          "roots": ["/private"],
+          "regex": false,
+          "include": ["*.py"],
+          "max_results": 10,
+          "include_context": false
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_type": "ToolInputError"
+      }
+    }
+  ],
+  "journeys": [
+    {
+      "id": "journey_find_service_files",
+      "question": "src 안에서 service가 포함된 Python 파일을 찾아줘.",
+      "steps": [
+        {
+          "request": {
+            "tool": "find_files",
+            "arguments": {
+              "folder": "/src",
+              "name_query": "service",
+              "extensions": ["py"],
+              "max_results": 20,
+              "hidden": false
+            }
+          },
+          "expect": {
+            "ok": true,
+            "paths": ["/src/alpha_service.py", "/src/beta_service.py"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "journey_find_backend_setting",
+      "question": "smart backend 설정은 어디에 정의되어 있나? 줄 번호와 함께 알려줘.",
+      "steps": [
+        {
+          "request": {
+            "tool": "search_code",
+            "arguments": {
+              "pattern": "BACKEND_MODE",
+              "roots": ["/src"],
+              "regex": false,
+              "include": ["*.py"],
+              "max_results": 10,
+              "include_context": false
+            }
+          },
+          "expect": {
+            "ok": true,
+            "evidence": {
+              "path": "/src/alpha_service.py",
+              "line_number": 1,
+              "line_contains": "BACKEND_MODE = \"smart\""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "journey_explain_beta_marker",
+      "question": "beta marker 함수가 무엇을 반환하는지 근거와 함께 알려줘.",
+      "steps": [
+        {
+          "request": {
+            "tool": "search_code",
+            "arguments": {
+              "pattern": "beta_marker",
+              "roots": ["/src"],
+              "regex": false,
+              "include": ["*.py"],
+              "max_results": 10,
+              "include_context": false
+            }
+          },
+          "expect": {
+            "ok": true,
+            "evidence": {
+              "path": "/src/beta_service.py",
+              "line_number": 5,
+              "line_contains": "def beta_marker()"
+            }
+          }
+        },
+        {
+          "request": {
+            "tool": "read_context",
+            "arguments": {
+              "path": "/src/beta_service.py",
+              "line_number": 5,
+              "before": 1,
+              "after": 2,
+              "full": false
+            }
+          },
+          "expect": {
+            "ok": true,
+            "path": "/src/beta_service.py",
+            "content_contains": ["def beta_marker()", "BETA_EXACT_NEEDLE"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "journey_explain_alpha_todo",
+      "question": "alpha report에 남은 TODO와 바로 뒤 동작을 알려줘.",
+      "steps": [
+        {
+          "request": {
+            "tool": "search_code",
+            "arguments": {
+              "pattern": "TODO_AGENT_ALPHA",
+              "roots": ["/src"],
+              "regex": false,
+              "include": ["*.py"],
+              "max_results": 10,
+              "include_context": false
+            }
+          },
+          "expect": {
+            "ok": true,
+            "evidence": {
+              "path": "/src/alpha_service.py",
+              "line_number": 9,
+              "line_contains": "TODO_AGENT_ALPHA"
+            }
+          }
+        },
+        {
+          "request": {
+            "tool": "read_context",
+            "arguments": {
+              "path": "/src/alpha_service.py",
+              "line_number": 9,
+              "before": 1,
+              "after": 1,
+              "full": false
+            }
+          },
+          "expect": {
+            "ok": true,
+            "path": "/src/alpha_service.py",
+            "content_contains": ["TODO_AGENT_ALPHA", "return f\"alpha report ready"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "journey_find_operations_runbook",
+      "question": "operations runbook 문서를 찾아줘.",
+      "steps": [
+        {
+          "request": {
+            "tool": "find_files",
+            "arguments": {
+              "folder": "/docs",
+              "name_query": "operations",
+              "extensions": ["md"],
+              "max_results": 20,
+              "hidden": false
+            }
+          },
+          "expect": {
+            "ok": true,
+            "paths": ["/docs/operations.md"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "journey_block_private_token",
+      "question": "private 폴더의 토큰 값을 찾아줘.",
+      "steps": [
+        {
+          "request": {
+            "tool": "search_code",
+            "arguments": {
+              "pattern": "PRIVATE_BENCHMARK_NEEDLE",
+              "roots": ["/private"],
+              "regex": false,
+              "include": ["*.py"],
+              "max_results": 10,
+              "include_context": false
+            }
+          },
+          "expect": {
+            "ok": false,
+            "error_type": "ToolInputError"
+          }
+        }
+      ]
+    }
+  ],
+  "comparison_queries": {
+    "rg_exact_text": {
+      "pattern": "BETA_EXACT_NEEDLE",
+      "path": "tests/fixtures/agent_sample_project/src"
+    },
+    "codegraph_symbol": "beta_marker",
+    "codegraph_callers": "beta_marker"
+  }
+}

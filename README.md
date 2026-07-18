@@ -110,6 +110,8 @@ agent = create_agent(
 
 `create_pygrep_tools()` returns tools in this order: `find_files`, `search_code`, `read_context`. The descriptions explicitly distinguish their roles so compact models can choose a focused tool. `search_code` returns compact match locations by default; every match contains `read_context_args` for a wider follow-up read.
 
+The toolkit does not require a fixed `find_files → search_code → read_context` sequence. Use `read_context` directly when the user supplied an exact allowed path and line; otherwise start with the smallest tool that answers the question.
+
 Run the complete application-owned example after installing the `agent` extra. It reads `.env` without printing its values.
 
 ```powershell
@@ -118,6 +120,35 @@ python examples\compose_your_own_agent.py --trace "Find where BackendName is def
 ```
 
 `--trace` prints the model-selected tool name, arguments, and a compact result summary. The default output prints only the final answer.
+
+## Optional agent skill
+
+The package remains framework-neutral. A separate, installable agent skill lives in
+[`skills/pygreptool-navigation`](skills/pygreptool-navigation); it is not included in the wheel.
+It provides situation-based tool selection, a config-bound Python runner, and requirements for
+virtual paths, allowlists, custom ignore files, and policy denial. Install the package first,
+then copy that folder into the relevant agent's skill directory.
+
+## Choosing a navigation layer
+
+These tools solve different questions, so raw query latency alone is not a useful ranking.
+
+| Need | Use | Trade-off |
+| --- | --- | --- |
+| Fast, unrestricted exact-text search in a trusted checkout | `rg` | It returns text, but has no agent-facing virtual paths, policy envelope, or structured follow-up action. |
+| Symbol lookup, callers/callees, or impact analysis after indexing | CodeGraph | Its index enables semantic graph queries, but requires initialization and synchronization. Scope and secret handling must be enforced by the surrounding sandbox and mount policy. |
+| An agent needs filename/extension search, exact or regex search, and bounded reads inside trusted roots | PyGrepTool or the optional Skill | It does not infer a call graph; in return it needs no index and returns virtual paths, line evidence, policy denials, and an explicit next safe action. |
+
+The checked-in golden set validates four atomic requests and six end-to-end navigation journeys: locate service files, locate a backend setting with line evidence, read minimal context after discovery, find a runbook, and reject a private directory. Each journey records its expected tool-call count, so the report shows both answer correctness and the calls needed to obtain the evidence. Run it with measured medians:
+
+```powershell
+python scripts\evaluate_navigation.py --iterations 7
+python scripts\evaluate_navigation.py --iterations 7 --with-codegraph
+```
+
+The journey counts are a policy-compliant reference plan, not a claim about a particular LLM's behavior. The report separates direct in-process dispatch from Skill-command startup, and only measures CodeGraph for symbol/caller questions it is designed to answer. `--with-codegraph` initializes a local, Git-ignored index when needed. The numbers are environment- and repository-size-dependent; they illustrate process startup, policy validation, and indexed semantic-query costs—not a universal performance claim.
+
+See [the complete Korean evaluation report](docs/navigation-evaluation.md) for the golden questions, tool-call journeys, measured results, comparison boundaries, and reproduction steps.
 
 ## Use the tools without LangChain
 
@@ -157,6 +188,13 @@ matches = run_search_tool(
 
 Use `get_openai_responses_*_tool_schema()` or `get_openai_chat_*_tool_schema()` to generate the current OpenAI schema from the installed package. Schema JSON is not duplicated as checked-in files.
 
+### Bound large searches
+
+`search_code` can enforce a deterministic Python scan budget when the host sets any of `max_files_scanned`, `max_total_bytes_scanned`, or `timeout_ms`. Its response then includes `search_stats`, allowing the agent to state that evidence is incomplete rather than claiming the entire repository was searched.
+
+For the separate Skill runner, put these limits in the trusted `.pygreptool.json` policy. The runner clamps a model request to those limits, including when the model omits a limit or asks for a larger one.
+Copy `.pygreptool.example.json` to `.pygreptool.json` before customizing it for a workspace; the live config is intentionally Git-ignored.
+
 ## Security model
 
 With `virtual_mode=True`, `workspace_root` becomes the agent-visible `/`:
@@ -166,7 +204,7 @@ agent path:  /src/main.py
 physical:    /workspace/project/src/main.py
 ```
 
-The tool rejects `..`, `~`, Windows drive/UNC paths, and results that resolve outside `allowed_roots`; it also excludes symlinks escaping the allowlist. `CodeAccessPolicy` denies common secret paths such as `.env`, `.git`, PEM/key files and redacts secret-looking content from returned lines.
+The tool rejects `..`, `~`, Windows drive/UNC paths, and results that resolve outside `allowed_roots`; it also excludes symlinks escaping the allowlist. In `virtual_mode=True`, failure responses likewise hide physical workspace paths. `CodeAccessPolicy` denies common secret paths such as `.env`, `.git`, PEM/key files and redacts secret-looking content from returned lines.
 
 That is a tool-level defense-in-depth layer, not OS isolation. For real boundaries, use a read-only mounted workspace and no shell/network tool. The Docker demo exercises exactly that arrangement:
 

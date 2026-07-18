@@ -110,6 +110,8 @@ agent = create_agent(
 
 `create_pygrep_tools()`는 `find_files`, `search_code`, `read_context` 순서의 tool을 반환합니다. 작은 모델도 역할을 구분하도록 description을 작성했습니다. `search_code`는 기본으로 파일·줄 위치만 간결하게 반환하며, 각 match의 `read_context_args`로 필요한 부분만 더 읽을 수 있습니다.
 
+tool은 `find_files → search_code → read_context` 순서로 반드시 호출할 필요가 없습니다. 사용자가 이미 허용된 정확한 파일 경로와 줄을 주었다면 `read_context`를 바로 쓰고, 그 외에는 질문에 답하는 가장 작은 tool부터 선택하세요.
+
 `agent` extra 설치 후 애플리케이션 소유 agent 예제를 실행할 수 있습니다. `.env`는 읽지만 값은 출력하지 않습니다.
 
 ```powershell
@@ -118,6 +120,34 @@ python examples\compose_your_own_agent.py --trace "Find where BackendName is def
 ```
 
 `--trace`는 model이 선택한 tool 이름, argument, 요약된 결과를 출력합니다. 기본 실행은 최종 답변만 출력합니다.
+
+## 탐색 도구를 고르는 기준
+
+세 도구는 같은 문제를 푸는 것이 아니므로, 단순 조회 시간만으로 순위를 매기면 안 됩니다.
+
+| 필요한 질문 | 선택 | 고려할 점 |
+| --- | --- | --- |
+| 신뢰할 수 있는 checkout에서 빠르게 정확한 문자열만 찾기 | `rg` | 텍스트는 빠르게 찾지만 agent용 가상 경로, policy 결과, 후속 작업 구조는 제공하지 않습니다. |
+| 인덱싱 뒤 심볼, 호출자/피호출자, 영향 범위 찾기 | CodeGraph | semantic graph 질의가 가능하지만 초기화·동기화가 필요합니다. 접근 범위와 비밀 정보 처리는 sandbox와 mount policy에서 별도로 보장해야 합니다. |
+| agent가 허용된 루트 안에서 파일명·확장자, 문자열/정규식, 제한된 문맥을 탐색하기 | PyGrepTool 또는 선택적 Skill | call graph를 추론하지 않는 대신 사전 인덱스가 필요 없고, 가상 경로·줄 근거·policy 차단·다음 안전한 행동을 구조화해 반환합니다. |
+
+체크인된 골든셋은 단일 요청 4개와 end-to-end 탐색 여정 6개를 검증합니다. service 파일 찾기, backend 설정의 줄 근거 찾기, 발견 뒤 필요한 문맥만 읽기, runbook 찾기, private 디렉터리 차단이 포함됩니다. 각 여정에는 기대 tool 호출 수가 있어, 결과의 정확도와 근거를 얻기까지 필요한 호출 횟수를 함께 확인할 수 있습니다. 중앙값 지연 시간까지 함께 측정하려면 다음을 실행하세요.
+
+```powershell
+python scripts\evaluate_navigation.py --iterations 7
+python scripts\evaluate_navigation.py --iterations 7 --with-codegraph
+```
+
+여정의 호출 수는 policy를 지키는 기준 계획이며 특정 LLM이 반드시 같은 횟수로 행동한다는 의미는 아닙니다. 보고서는 in-process dispatch와 Skill command 시작 비용을 분리하고, CodeGraph는 실제 강점인 심볼/호출자 질문에서만 측정합니다. `--with-codegraph`는 필요할 때만 Git에 포함되지 않는 로컬 index를 만듭니다. 수치는 실행 환경과 저장소 크기에 따라 달라지므로, 보편적 성능 우위가 아니라 process 시작·policy 검증·semantic index 질의의 비용을 보여 주는 참고값으로 해석하세요.
+
+골든 질문, tool 호출 여정, 측정 결과, 비교 범위, 재현 명령은 [최종 평가 문서](docs/navigation-evaluation.md)에 정리했습니다.
+
+## 선택적 agent Skill
+
+패키지는 framework에 종속되지 않습니다. wheel에 포함하지 않는 별도 agent Skill은
+[`skills/pygreptool-navigation`](skills/pygreptool-navigation)에 있습니다. 이 Skill은 상황별 tool 선택,
+config에 고정된 Python runner, 가상 경로·allowlist·custom ignore·policy denial의 필수 조건을 제공합니다.
+먼저 package를 설치한 뒤, 해당 폴더를 사용하는 agent의 skill directory에 복사하세요.
 
 ## LangChain 없이 handler 사용하기
 
@@ -157,6 +187,13 @@ matches = run_search_tool(
 
 현재 OpenAI schema는 설치한 package에서 `get_openai_responses_*_tool_schema()` 또는 `get_openai_chat_*_tool_schema()`로 생성합니다. schema JSON을 파일로 중복 관리하지 않습니다.
 
+### 큰 검색 범위 제한
+
+host는 `max_files_scanned`, `max_total_bytes_scanned`, `timeout_ms` 중 하나를 설정해 `search_code`를 deterministic Python scan budget 안에서 실행할 수 있습니다. 응답의 `search_stats`로 agent는 전체 저장소를 다 검색한 것처럼 말하지 않고, 근거가 불완전한지 보고할 수 있습니다.
+
+별도 Skill runner에서는 이 제한을 trusted `.pygreptool.json` policy에 넣으세요. model이 제한을 생략하거나 더 큰 값을 요청해도 runner가 policy 값으로 제한합니다.
+프로젝트에 맞게 수정하려면 `.pygreptool.example.json`을 `.pygreptool.json`으로 복사하세요. 실제 설정 파일은 의도적으로 Git에서 제외합니다.
+
 ## 보안 모델
 
 `virtual_mode=True`일 때 `workspace_root`는 agent에게 보이는 `/`가 됩니다.
@@ -166,7 +203,7 @@ agent path:  /src/main.py
 physical:    /workspace/project/src/main.py
 ```
 
-tool은 `..`, `~`, Windows drive/UNC 경로, `allowed_roots` 바깥으로 resolve되는 결과를 거부합니다. allowlist 밖으로 나가는 symlink도 제외합니다. `CodeAccessPolicy`는 `.env`, `.git`, PEM/key 파일처럼 흔한 secret path를 차단하고 반환 문자열의 secret-like content를 redaction합니다.
+tool은 `..`, `~`, Windows drive/UNC 경로, `allowed_roots` 바깥으로 resolve되는 결과를 거부합니다. allowlist 밖으로 나가는 symlink도 제외합니다. `virtual_mode=True`에서는 실패 응답도 물리 workspace 경로를 숨깁니다. `CodeAccessPolicy`는 `.env`, `.git`, PEM/key 파일처럼 흔한 secret path를 차단하고 반환 문자열의 secret-like content를 redaction합니다.
 
 이는 tool 수준의 defense-in-depth이며 OS 격리는 아닙니다. 실제 경계는 read-only workspace mount와 shell/network tool 미제공으로 만드세요. Docker demo는 이 조합을 검증합니다.
 

@@ -24,8 +24,9 @@ def create_pygrep_tools(
 ):
     """Return read-only tools that can be appended to any LangChain toolkit.
 
-    The returned order guides agents from file discovery to content search and then
-    to bounded context. No tool can create, modify, move, or delete a file.
+    The three tools have distinct roles; agents should choose the minimal one for
+    the question instead of following a fixed sequence. No tool can create,
+    modify, move, or delete a file.
     """
 
     return [

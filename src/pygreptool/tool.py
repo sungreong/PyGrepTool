@@ -3,7 +3,8 @@ from __future__ import annotations
 import copy
 import json
 import os
-from dataclasses import asdict
+import time
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -16,6 +17,7 @@ from .core import (
     resolve_search_roots,
     search,
 )
+from .error_safety import safe_tool_error_message
 from .path_policy import AgentPathMapper
 from .runtime_scope import (
     ToolInputError,
@@ -25,15 +27,16 @@ from .runtime_scope import (
     validate_tool_allowed_roots,
 )
 from .security_policy import CodeAccessPolicy
+from .backends.python import ScanBudget, ScanStats, search_with_python
 
 TOOL_NAME = "search_code"
 TOOL_NAME_READ_CONTEXT = "read_context"
 TOOL_DESCRIPTION = (
-    "Search text inside policy-allowed project files. Use for code, symbols, TODOs, imports, and configuration keys. "
-    "Do not use for filename discovery; use find_files. Returns exact path, line, column, and read_context_args."
+    "Search exact text or a regex inside allowed files. Use for code, symbols, TODOs, imports, errors, and config keys. "
+    "For filenames or extensions use find_files instead. Returns path, line, and read_context_args."
 )
 TOOL_DESCRIPTION_READ_CONTEXT = (
-    "Read a bounded line range from one policy-allowed file. Use after search_code to verify a selected match."
+    "Read a bounded line range from one allowed file. Use after search_code, or when the user already gave an exact allowed path and line."
 )
 
 _BACKEND_VALUES = ["auto", "smart", "rg", "grep", "python"]
@@ -58,8 +61,8 @@ _STRICT_PARAMETERS: dict[str, Any] = {
             "items": {"type": "string"},
             "minItems": 1,
             "description": (
-                "Files or directories to search. Prefer project-relative paths such as "
-                "['src', 'tests'] rather than broad paths like ['/']."
+                "Focused paths to search. In virtual mode use agent-visible paths such as "
+                "['/src']; otherwise use workspace-relative paths such as ['src']."
             ),
         },
         "regex": {
@@ -126,6 +129,24 @@ _STRICT_PARAMETERS: dict[str, Any] = {
                 "for selected matches."
             ),
         },
+        "max_files_scanned": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "maximum": 100000,
+            "description": "Optional Python-scan file budget. Supplying any scan budget uses the deterministic Python backend.",
+        },
+        "max_total_bytes_scanned": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "maximum": 1073741824,
+            "description": "Optional total-byte budget for a deterministic Python scan.",
+        },
+        "timeout_ms": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "maximum": 60000,
+            "description": "Optional time budget in milliseconds for a deterministic Python scan.",
+        },
     },
     # Strict function schemas require every property to be listed as required.
     # Optional fields are represented by allowing null and applying defaults in the handler.
@@ -144,6 +165,9 @@ _STRICT_PARAMETERS: dict[str, Any] = {
         "context_before",
         "context_after",
         "include_context",
+        "max_files_scanned",
+        "max_total_bytes_scanned",
+        "timeout_ms",
     ],
     "additionalProperties": False,
 }
@@ -153,7 +177,7 @@ _READ_CONTEXT_PARAMETERS: dict[str, Any] = {
     "properties": {
         "path": {
             "type": "string",
-            "description": "File path to read. Prefer project-relative paths returned by search_code.",
+            "description": "Allowed file path to read. Prefer a path returned by search_code, or an exact path supplied by the user.",
         },
         "line_number": {
             "type": ["integer", "null"],
@@ -421,6 +445,11 @@ def normalize_tool_arguments(arguments: Mapping[str, Any] | str) -> dict[str, An
         "context_before": context_before,
         "context_after": context_after,
         "include_context": _optional_bool(raw.get("include_context"), "include_context", True),
+        "max_files_scanned": _optional_int(raw.get("max_files_scanned"), "max_files_scanned", None, minimum=1, maximum=100000),
+        "max_total_bytes_scanned": _optional_int(
+            raw.get("max_total_bytes_scanned"), "max_total_bytes_scanned", None, minimum=1, maximum=1024 * 1024 * 1024
+        ),
+        "timeout_ms": _optional_int(raw.get("timeout_ms"), "timeout_ms", None, minimum=1, maximum=60000),
     }
 
 
@@ -476,6 +505,33 @@ def _truncate_text(text: str, max_chars: int | None) -> tuple[str, bool]:
 
 def _context_to_tool_dict(context: Any) -> dict[str, Any]:
     return asdict(context)
+
+
+def _add_context_to_python_results(
+    results: list[SearchResult],
+    *,
+    context_before: int,
+    context_after: int,
+    encoding: str,
+) -> list[SearchResult]:
+    """Apply the public include_context contract to a budgeted Python search."""
+
+    if context_before == 0 and context_after == 0:
+        return results
+    enriched: list[SearchResult] = []
+    for result in results:
+        context = read_context(
+            result.path,
+            line_number=result.line_number,
+            before=context_before,
+            after=context_after,
+            full=False,
+            max_lines=context_before + context_after + 1,
+            max_chars=20000,
+            encoding=encoding,
+        )
+        enriched.append(replace(result, context=context))
+    return enriched
 
 
 def _read_context_args_for_result(result: SearchResult, *, path_formatter: Callable[[Path], str] = str) -> dict[str, Any]:
@@ -583,30 +639,57 @@ def run_search_tool(
 
         context_before = normalized["context_before"] if normalized["include_context"] else 0
         context_after = normalized["context_after"] if normalized["include_context"] else 0
-        results = search(
-            normalized["pattern"],
-            resolved_roots,
-            regex=normalized["regex"],
-            include=normalized["include"],
-            ignore_case=normalized["ignore_case"],
-            hidden=normalized["hidden"],
-            backend=normalized["backend"],
-            fallback=normalized["fallback"],
-            encoding=normalized["encoding"],
-            max_results=probe_limit,
-            workspace_root=runtime_workspace_root,
-            respect_ignore=respect_ignore,
-            ignore_files=ignore_files,
-            context_before=context_before,
-            context_after=context_after,
-        )
+        started = time.monotonic()
+        budget_values = (normalized["max_files_scanned"], normalized["max_total_bytes_scanned"], normalized["timeout_ms"])
+        budgeted_scan = any(value is not None for value in budget_values)
+        scan_stats = ScanStats()
+        if budgeted_scan:
+            results = search_with_python(
+                normalized["pattern"],
+                resolved_roots,
+                regex=normalized["regex"],
+                include=normalized["include"],
+                ignore_case=normalized["ignore_case"],
+                hidden=normalized["hidden"],
+                encoding=normalized["encoding"],
+                workspace_root=runtime_workspace_root,
+                respect_ignore=respect_ignore,
+                ignore_files=ignore_files,
+                scan_budget=ScanBudget(*budget_values),
+                scan_stats=scan_stats,
+            )
+            results = results[:probe_limit] if probe_limit is not None else results
+            results = _add_context_to_python_results(
+                results,
+                context_before=context_before,
+                context_after=context_after,
+                encoding=normalized["encoding"],
+            )
+        else:
+            results = search(
+                normalized["pattern"],
+                resolved_roots,
+                regex=normalized["regex"],
+                include=normalized["include"],
+                ignore_case=normalized["ignore_case"],
+                hidden=normalized["hidden"],
+                backend=normalized["backend"],
+                fallback=normalized["fallback"],
+                encoding=normalized["encoding"],
+                max_results=probe_limit,
+                workspace_root=runtime_workspace_root,
+                respect_ignore=respect_ignore,
+                ignore_files=ignore_files,
+                context_before=context_before,
+                context_after=context_after,
+            )
         if policy is not None:
             results = [
                 result for result in results if policy.allow_result_path(result.path, workspace_root=runtime_workspace_root)
             ]
 
         max_line_chars = normalized["max_line_chars"]
-        truncated = result_limit is not None and len(results) > result_limit
+        truncated = (result_limit is not None and len(results) > result_limit) or scan_stats.budget_exhausted or scan_stats.timed_out
         visible_results = results[:result_limit] if result_limit is not None else results
         items = [
             search_result_to_tool_dict(item, max_line_chars=max_line_chars, path_formatter=mapper.to_agent_path)
@@ -623,6 +706,20 @@ def run_search_tool(
             "truncated": truncated,
             "results": items,
             "redacted": redacted,
+            "search_stats": (
+                scan_stats.to_dict(duration_ms=(time.monotonic() - started) * 1000, enforced=True)
+                if budgeted_scan
+                else {
+                    "duration_ms": round((time.monotonic() - started) * 1000, 2),
+                    "budget_enforced": False,
+                    "files_scanned": None,
+                    "total_bytes_scanned": None,
+                    "files_skipped_by_budget": None,
+                    "files_skipped_binary": None,
+                    "budget_exhausted": False,
+                    "timed_out": False,
+                }
+            ),
             "related_tools": [
                 {
                     "tool": TOOL_NAME_READ_CONTEXT,
@@ -646,6 +743,7 @@ def run_search_tool(
             "count": 0,
             "truncated": False,
             "results": [],
+            "search_stats": None,
             "related_tools": [
                 {
                     "tool": TOOL_NAME_READ_CONTEXT,
@@ -656,7 +754,7 @@ def run_search_tool(
             "next_step": "Check the pattern, roots, and allowed_roots, then retry.",
             "error": {
                 "type": exc.__class__.__name__,
-                "message": str(exc),
+                "message": safe_tool_error_message(exc, virtual_mode=virtual_mode),
             },
         }
 
@@ -747,7 +845,7 @@ def run_read_context_tool(
             "next_step": "Use a policy-allowed path returned by search_code and retry.",
             "error": {
                 "type": exc.__class__.__name__,
-                "message": str(exc),
+                "message": safe_tool_error_message(exc, virtual_mode=virtual_mode),
             },
         }
 

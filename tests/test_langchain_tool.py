@@ -121,8 +121,8 @@ def test_langchain_search_tool_schema_guides_focused_search(tmp_path: Path) -> N
     assert "Do not use for filenames" in search_tool.description
     schema = search_tool.args_schema.model_json_schema()
     assert schema["properties"]["backend"]["default"] == "smart"
-    assert "project-relative paths" in schema["properties"]["roots"]["description"]
-    assert "[:=]" in schema["properties"]["pattern"]["description"]
+    assert "agent-visible path" in schema["properties"]["roots"]["description"]
+    assert "literal string" in schema["properties"]["pattern"]["description"]
     assert "context_before" in schema["properties"]
     assert "context_after" in schema["properties"]
     assert schema["properties"]["include_context"]["default"] is False

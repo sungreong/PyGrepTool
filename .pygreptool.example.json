@@ -1,0 +1,14 @@
+{
+  "allowed_roots": [
+    "."
+  ],
+  "ignore_files": [
+    ".gitignore",
+    ".pygrepignore"
+  ],
+  "respect_ignore": true,
+  "policy": {
+    "deny_globs": [],
+    "max_file_size_bytes": 2097152
+  }
+}

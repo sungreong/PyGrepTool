@@ -44,7 +44,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 addopts = "-q -m 'not live_agent'"
 markers = [
   "live_agent: tests that call a live LLM provider; excluded from the default test suite",

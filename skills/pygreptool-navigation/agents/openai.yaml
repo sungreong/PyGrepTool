@@ -1,0 +1,4 @@
+interface:
+  display_name: "PyGrepTool Navigation"
+  short_description: "Scoped, evidence-first code navigation"
+  default_prompt: "Use $pygreptool-navigation to find code safely in this workspace."

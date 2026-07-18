@@ -1,0 +1,3 @@
+# Agent-search-only exclusions. Add generated or noisy paths below.
+# build/
+# dist/

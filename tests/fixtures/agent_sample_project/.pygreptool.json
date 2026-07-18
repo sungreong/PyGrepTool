@@ -1,0 +1,9 @@
+{
+  "allowed_roots": ["src", "docs"],
+  "ignore_files": [".gitignore"],
+  "respect_ignore": true,
+  "policy": {
+    "deny_globs": ["private/**"],
+    "max_file_size_bytes": 2097152
+  }
+}

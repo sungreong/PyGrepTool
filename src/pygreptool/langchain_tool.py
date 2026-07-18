@@ -17,16 +17,13 @@ class SearchCodeInput(BaseModel):
     """Input schema for the LangChain search_code tool."""
 
     pattern: str = Field(
-        description=(
-            "Text or regular expression to search for. For code variants, accept a closing key quote, for example "
-            "backend[\"']?\\s*[:=]\\s*[\"']smart[\"']; this matches quoted or unquoted keys without relying on one style."
-        )
+        description="Exact text or a regular expression inside files. Use false for regex when searching a literal string.",
     )
     roots: list[str] = Field(
         default_factory=lambda: ["."],
         description=(
-            "Use project-relative paths to search. Use ['.'] for the configured workspace unless the user named a folder "
-            "or find_files returned one. Relative roots are resolved inside the configured workspace or allowed scope."
+            "Use a focused agent-visible path. In virtual mode use ['/src']; otherwise use ['src']. "
+            "Use ['.'] only when the configured workspace itself is the intended scope."
         ),
     )
     regex: bool = Field(default=False, description="Whether pattern is a regular expression.")
@@ -69,7 +66,7 @@ class FindFilesInput(BaseModel):
 class ReadContextInput(BaseModel):
     """Input schema for the LangChain read_context tool."""
 
-    path: str = Field(description="File path to read. Prefer the path from a search_code result.")
+    path: str = Field(description="Allowed file path to read. Prefer a path from search_code, or use an exact path supplied by the user.")
     line_number: int | None = Field(
         default=None,
         ge=1,
@@ -294,8 +291,8 @@ def create_langchain_search_tool(
         search_code,
         name="search_code",
         description=(
-            "Search text inside allowed files. Use for symbols, TODOs, imports, tests, and config keys. "
-            "Do not use for filenames; use find_files. Use a focused root such as '/src'. "
+        "Search exact text or a regex inside allowed files. Use for symbols, TODOs, imports, tests, errors, and config keys. "
+            "Do not use for filenames; use find_files. Use a focused root such as '/src' in virtual mode. "
             "Returns compact exact locations by default; set include_context=true only when every match needs nearby lines. "
             "Otherwise call read_context with read_context_args for selected matches."
         ),
@@ -356,7 +353,7 @@ def create_langchain_read_context_tool(
         read_context,
         name="read_context",
         description=(
-            "Read a bounded line range from one allowed file. Use only after search_code when a selected match needs context."
+            "Read a bounded line range from one allowed file. Use after search_code, or when the user already gave an exact allowed path and line."
         ),
         args_schema=ReadContextInput,
     )

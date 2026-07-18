@@ -7,6 +7,7 @@ from dataclasses import asdict
 from typing import Any, Callable, Mapping, Sequence
 
 from .core import DEFAULT_IGNORE_FILES, PathInput
+from .error_safety import safe_tool_error_message
 from .file_discovery import find_files, normalize_extensions
 from .path_policy import AgentPathMapper
 from .runtime_scope import ToolInputError, resolve_effective_allowed_roots, resolve_tool_workspace_root
@@ -219,7 +220,7 @@ def run_find_files_tool(
             "results": [],
             "related_tools": [],
             "next_step": "Check folder and allowed_roots, then retry with a project-relative folder.",
-            "error": {"type": exc.__class__.__name__, "message": str(exc)},
+            "error": {"type": exc.__class__.__name__, "message": safe_tool_error_message(exc, virtual_mode=virtual_mode)},
         }
 
 
